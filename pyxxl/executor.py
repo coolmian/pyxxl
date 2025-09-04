@@ -15,7 +15,7 @@ from pyxxl.ctx import g
 from pyxxl.enum import executorBlockStrategy
 from pyxxl.log import executor_logger
 from pyxxl.logger import DiskLog, LogBase, new_logger
-from pyxxl.process_executor import run_handler_in_process, is_pickle_serializable
+from pyxxl.process_executor import is_pickle_serializable, run_handler_in_process
 from pyxxl.schema import RunData
 from pyxxl.setting import ExecutorConfig
 from pyxxl.types import DecoratedCallable
@@ -44,7 +44,7 @@ class HandlerInfo:
     async def start(self, timeout: int, process_pool: Optional[Any] = None) -> Any:
         if self.is_async:
             return await asyncio.wait_for(self.handler(), timeout=timeout)
-        
+
         # For sync handlers, use multiprocessing instead of threading
         # Check if handler can be pickle serialized
         if not is_pickle_serializable(self.handler):
@@ -63,20 +63,20 @@ class HandlerInfo:
             except (asyncio.exceptions.TimeoutError, asyncio.CancelledError) as e:
                 event.set()
                 raise e
-        
+
         # Get current context data to pass to the process
         run_data = g.try_get_run_data()
         if run_data is None:
             raise RuntimeError("No run data available in context for process execution")
-        
+
         # Convert RunData to dict for serialization
         run_data_dict = run_data.to_dict()
-        
+
         # Execute in process pool
         loop = asyncio.get_event_loop()
         if process_pool is not None:
             return await asyncio.wait_for(
-                loop.run_in_executor(process_pool, run_handler_in_process, self.handler, run_data_dict), 
+                loop.run_in_executor(process_pool, run_handler_in_process, self.handler, run_data_dict),
                 timeout=timeout
             )
         else:
@@ -319,7 +319,7 @@ class Executor:
             self.queue.clear()
             for _, task in self.tasks.items():
                 task.task.cancel()
-        
+
         # Shutdown both executors
         self.process_pool.shutdown(wait=False)
         self.thread_pool.shutdown(wait=False)

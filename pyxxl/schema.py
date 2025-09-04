@@ -1,5 +1,5 @@
-from dataclasses import dataclass, fields
-from typing import Optional
+from dataclasses import asdict, dataclass, fields
+from typing import Dict, Optional
 
 
 @dataclass(frozen=True)
@@ -37,3 +37,7 @@ class RunData:
     def from_dict(cls, data: dict) -> "RunData":
         class_fields = {f.name for f in fields(cls)}
         return RunData(**{k: v for k, v in data.items() if k in class_fields})
+    
+    def to_dict(self) -> Dict[str, any]:
+        """Convert RunData to dictionary for serialization."""
+        return asdict(self)

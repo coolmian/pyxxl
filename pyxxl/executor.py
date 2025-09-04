@@ -6,7 +6,7 @@ import threading
 import time
 import warnings
 from collections import defaultdict
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, MutableSet, Optional
 
@@ -15,7 +15,7 @@ from pyxxl.ctx import g
 from pyxxl.enum import executorBlockStrategy
 from pyxxl.log import executor_logger
 from pyxxl.logger import DiskLog, LogBase, new_logger
-from pyxxl.process_executor import is_pickle_serializable, run_handler_in_process
+
 from pyxxl.schema import RunData
 from pyxxl.setting import ExecutorConfig
 from pyxxl.types import DecoratedCallable
@@ -41,53 +41,22 @@ class HandlerInfo:
     def __post_init__(self) -> None:
         self.is_async = asyncio.iscoroutinefunction(self.handler)
 
-    async def start(self, timeout: int, process_pool: Optional[Any] = None) -> Any:
+    async def start(self, timeout: int) -> Any:
         if self.is_async:
             return await asyncio.wait_for(self.handler(), timeout=timeout)
 
-        # For sync handlers, use multiprocessing instead of threading
-        # Check if handler can be pickle serialized
-        if not is_pickle_serializable(self.handler):
-            # Fallback to threading if handler cannot be pickled
-            warnings.warn(
-                f"Handler {self.handler.__name__} cannot be pickle serialized, falling back to threading. "
-                "Consider making your handler pickle-serializable for better process isolation.",
-                RuntimeWarning,
-                stacklevel=2,
-            )
-            # Use the original threading approach as fallback
-            event = threading.Event()
-            g.set_cancel_event(event)
-            try:
-                return await asyncio.wait_for(asyncio.to_thread(self.handler), timeout=timeout)
-            except (asyncio.exceptions.TimeoutError, asyncio.CancelledError) as e:
-                event.set()
-                raise e
-
-        # Get current context data to pass to the process
-        run_data = g.try_get_run_data()
-        if run_data is None:
-            raise RuntimeError("No run data available in context for process execution")
-
-        # Convert RunData to dict for serialization
-        run_data_dict = run_data.to_dict()
-
-        # Execute in process pool
-        loop = asyncio.get_event_loop()
-        if process_pool is not None:
-            return await asyncio.wait_for(
-                loop.run_in_executor(process_pool, run_handler_in_process, self.handler, run_data_dict),
-                timeout=timeout
-            )
-        else:
-            # Fallback to threading if no process pool provided
-            event = threading.Event()
-            g.set_cancel_event(event)
-            try:
-                return await asyncio.wait_for(asyncio.to_thread(self.handler), timeout=timeout)
-            except (asyncio.exceptions.TimeoutError, asyncio.CancelledError) as e:
-                event.set()
-                raise e
+        # For sync handlers, use threading by default due to ContextVar serialization issues
+        # Most handlers reference global context (g.logger, g.xxl_run_data) which contains
+        # ContextVar objects that cannot be pickled reliably across all Python implementations
+        
+        # Use threading approach which is proven to work
+        event = threading.Event()
+        g.set_cancel_event(event)
+        try:
+            return await asyncio.wait_for(asyncio.to_thread(self.handler), timeout=timeout)
+        except (asyncio.exceptions.TimeoutError, asyncio.CancelledError) as e:
+            event.set()
+            raise e
 
 
 class XXLTask:
@@ -173,11 +142,12 @@ class Executor:
         )
         # todo: lock for jobId
         self.lock = asyncio.Lock()
-        # Use ProcessPoolExecutor for better isolation
-        self.process_pool = ProcessPoolExecutor(
-            max_workers=self.config.max_workers,
-        )
-        # Keep thread pool as fallback for non-serializable handlers
+        # Use ProcessPoolExecutor for better isolation when possible
+        # Currently disabled due to ContextVar serialization issues
+        # self.process_pool = ProcessPoolExecutor(
+        #     max_workers=self.config.max_workers,
+        # )
+        # Keep thread pool as primary executor for sync handlers
         self.thread_pool = ThreadPoolExecutor(
             max_workers=self.config.max_workers,
             thread_name_prefix="pyxxl_fallback_pool",
@@ -274,7 +244,7 @@ class Executor:
             try:
                 task_logger.info("Start job jobId=%s logId=%s [%s]" % (data.jobId, data.logId, data))
                 timeout = data.executorTimeout or self.config.task_timeout
-                result = await handler.start(timeout, process_pool=self.process_pool)
+                result = await handler.start(timeout)
                 task_logger.info("Job finished jobId=%s logId=%s" % (data.jobId, data.logId))
                 await self.xxl_client.callback(data.logId, start_time, code=200, msg=result)
                 self.successed_callback()
@@ -320,8 +290,8 @@ class Executor:
             for _, task in self.tasks.items():
                 task.task.cancel()
 
-        # Shutdown both executors
-        self.process_pool.shutdown(wait=False)
+        # Shutdown the thread pool
+        # self.process_pool.shutdown(wait=False)
         self.thread_pool.shutdown(wait=False)
 
     async def graceful_close(self, timeout: int = 60) -> None:

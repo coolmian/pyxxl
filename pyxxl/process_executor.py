@@ -1,6 +1,5 @@
 """Process-based executor for running sync handlers in separate processes."""
 
-import pickle
 import logging
 from typing import Any, Callable, Dict
 
@@ -52,7 +51,6 @@ def _create_process_logger(log_id: int, logger_factory_info: Dict[str, Any] = No
     """Create a logger in the subprocess that matches the main process logger factory."""
     if logger_factory_info and logger_factory_info.get('type') == 'DiskLog':
         # Recreate DiskLog functionality in the subprocess
-        from pyxxl.logger import DiskLog
         from pyxxl.logger.common import TASK_FORMATTER, PyxxlFileHandler, PyxxlStreamHandler
         
         log_path = logger_factory_info['log_path']
@@ -72,7 +70,6 @@ def _create_process_logger(log_id: int, logger_factory_info: Dict[str, Any] = No
         logger.addHandler(stdout_handler)
         
         # Add file handler  
-        import os
         from pathlib import Path
         log_file_path = Path(log_path) / f"pyxxl-{log_id}.log"
         # Ensure directory exists

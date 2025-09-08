@@ -6,7 +6,9 @@ from typing import Any, Callable, Dict
 from pyxxl.schema import RunData
 
 
-def run_handler_in_process(handler_func: Callable, run_data_dict: Dict[str, Any], logger_factory_info: Dict[str, Any] = None) -> Any:
+def run_handler_in_process(
+    handler_func: Callable, run_data_dict: Dict[str, Any], logger_factory_info: Dict[str, Any] = None
+) -> Any:
     """Execute a handler function in a separate process with provided context data.
 
     This function is designed to be pickle-serializable and run in a separate process.
@@ -19,10 +21,11 @@ def run_handler_in_process(handler_func: Callable, run_data_dict: Dict[str, Any]
 
     Returns:
         The result of the handler function execution
-    
+
     Raises:
         Exception: Any exception that occurs during handler execution
     """
+    process_logger = None
     try:
         # Import here to avoid circular imports and ensure proper process isolation
         from pyxxl.ctx import g
@@ -45,6 +48,31 @@ def run_handler_in_process(handler_func: Callable, run_data_dict: Dict[str, Any]
     except Exception as e:
         # Re-raise with additional context for debugging
         raise type(e)(f"Error in process execution of {getattr(handler_func, '__name__', 'unknown')}: {e}") from e
+    finally:
+        # Ensure file handlers are properly closed to prevent file handle leaks
+        # This mimics the cleanup behavior of DiskLog.after_running()
+        if process_logger is not None:
+            _cleanup_process_logger(process_logger)
+
+
+def _cleanup_process_logger(logger: logging.Logger) -> None:
+    """Clean up file handlers from the process logger to prevent file handle leaks.
+
+    This function mimics the cleanup behavior of DiskLog.after_running().
+    It's essential for preventing file handle leaks in subprocess execution.
+
+    Args:
+        logger: The logger whose file handlers should be closed and removed
+    """
+    # Find and close file handlers (similar to DiskLog.after_running)
+    file_handlers = [h for h in logger.handlers if isinstance(h, logging.FileHandler)]
+    for fh in file_handlers:
+        try:
+            fh.close()
+            logger.removeHandler(fh)
+        except Exception:
+            # Ignore errors during cleanup to avoid masking original exceptions
+            pass
 
 
 def _create_process_logger(log_id: int, logger_factory_info: Dict[str, Any] = None) -> logging.Logger:
@@ -52,34 +80,34 @@ def _create_process_logger(log_id: int, logger_factory_info: Dict[str, Any] = No
     if logger_factory_info and logger_factory_info.get('type') == 'DiskLog':
         # Recreate DiskLog functionality in the subprocess
         from pyxxl.logger.common import TASK_FORMATTER, PyxxlFileHandler, PyxxlStreamHandler
-        
+
         log_path = logger_factory_info['log_path']
-        
+
         # Create a logger similar to DiskLog.get_logger
         logger = logging.getLogger(f"pyxxl.task_log.disk.task-{log_id}")
         logger.propagate = False
         logger.setLevel(logging.INFO)
-        
+
         # Clear any existing handlers to avoid duplicates
         logger.handlers.clear()
-        
+
         # Add stdout handler
         stdout_handler = PyxxlStreamHandler()
         stdout_handler.setFormatter(TASK_FORMATTER)
         stdout_handler.setLevel(logging.INFO)
         logger.addHandler(stdout_handler)
-        
-        # Add file handler  
+
+        # Add file handler
         from pathlib import Path
         log_file_path = Path(log_path) / f"pyxxl-{log_id}.log"
         # Ensure directory exists
         log_file_path.parent.mkdir(parents=True, exist_ok=True)
-        
+
         file_handler = PyxxlFileHandler(str(log_file_path), delay=True)
         file_handler.setFormatter(TASK_FORMATTER)
         file_handler.setLevel(logging.INFO)
         logger.addHandler(file_handler)
-        
+
         return logger
     else:
         # Fallback to basic logger for unsupported factory types
